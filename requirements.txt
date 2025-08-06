@@ -9,3 +9,4 @@ python-multipart
 pydantic==2.11.7
 psycopg2-binary
 boto3
+itsdangerous
