@@ -7,7 +7,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy.orm import Session
 
 from db import init_db, SessionLocal, User, File
-from storage import upload_file_obj, download_file_obj
+from storage import upload_file_obj, generate_presigned_url
 from auth import create_user, authenticate_user, get_db, get_logged_in_user
 
 app = FastAPI()
@@ -50,7 +50,11 @@ def get_register(request: Request, prefill_email: str = ""):
 def post_register(request: Request, db: Session = Depends(get_db),
                   username: str = Form(...), email: str = Form(...), password: str = Form(...)):
     if db.query(User).filter((User.email == email) | (User.username == username)).first():
-        return templates.TemplateResponse("register.html", {"request": request, "error": "Email or username already in use!", "prefill_email": email})
+        return templates.TemplateResponse("register.html", {
+            "request": request,
+            "error": "Email or username already in use!",
+            "prefill_email": email
+        })
     user = create_user(db, username=username, email=email, password=password, role="user")
     request.session["user_email"] = user.email
     return RedirectResponse("/", status_code=303)
@@ -60,7 +64,6 @@ def logout(request: Request):
     request.session.clear()
     return RedirectResponse("/login", status_code=303)
 
-# User Dashboard
 @app.get("/user", response_class=HTMLResponse)
 def user_panel(request: Request, db: Session = Depends(get_db)):
     user = get_logged_in_user(request, db)
@@ -78,15 +81,12 @@ def upload(request: Request, db: Session = Depends(get_db), file: UploadFile = U
     storage_path = f"{user.id}/{file.filename}-{os.urandom(8).hex()}"
 
     try:
-        # ✅ Read content once
         file_bytes = file.file.read()
         size = len(file_bytes)
 
-        # ✅ Upload using in-memory bytes
         from io import BytesIO
         upload_file_obj(BytesIO(file_bytes), storage_path)
 
-        # ✅ Store metadata
         meta = File(
             filename=file.filename,
             user_id=user.id,
@@ -116,11 +116,13 @@ def download_file(file_id: int, request: Request, db: Session = Depends(get_db))
         return HTMLResponse("File does not exist", status_code=404)
     if user is None or (meta.user_id != user.id and not (user.is_admin or user.role == "admin")):
         return HTMLResponse("Unauthorized", status_code=403)
-    content = download_file_obj(meta.storage_path)
-    return Response(content, media_type="application/octet-stream",
-                    headers={"Content-Disposition": f"attachment; filename={meta.filename}"})
 
-# Admin Dashboard
+    try:
+        url = generate_presigned_url(meta.storage_path)
+        return RedirectResponse(url, status_code=303)
+    except Exception as e:
+        return HTMLResponse(f"Download failed: {e}", status_code=500)
+
 @app.get("/admin", response_class=HTMLResponse)
 def admin_panel(request: Request, db: Session = Depends(get_db)):
     user = get_logged_in_user(request, db)
